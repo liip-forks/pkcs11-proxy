@@ -36,7 +36,6 @@
 #include <unistd.h>
 
 /* TLS pre-shared key */
-static char tls_psk_identity[128] = { 0, };
 static char tls_psk_key_filename[MAXPATHLEN] = { 0, };
 
 /* -----------------------------------------------------------------------------
@@ -235,10 +234,29 @@ _tls_psk_client_cb(SSL *ssl, const char *hint,
 		   char *identity, unsigned int max_identity_len,
 		   unsigned char *psk, unsigned int max_psk_len)
 {
-	/* Client tells server which identity it wants to use in ClientKeyExchange */
-	snprintf(identity, max_identity_len, "%s", tls_psk_identity);
+	char line[1024], *hexkey;
+	int fd;
 
-	/* We currently just discard the hint sent to us by the server */
+	/* Parse the psk file just to find the identity */
+	if ((fd = open(tls_psk_key_filename, O_RDONLY | O_CLOEXEC)) < 0) {
+		gck_rpc_warn("can't open TLS-PSK keyfile '%.100s' for reading : %s",
+			     tls_psk_key_filename, strerror(errno));
+		return 0;
+	}
+
+	while (_fgets(line, sizeof(line) - 1, fd) > 0) {
+		/* Find first colon and set it to null => line is now identity */
+		hexkey = strchr(line, ':');
+		if (! hexkey)
+			continue;
+		*hexkey = 0;
+		/* Client tells server which identity it wants to use in ClientKeyExchange */
+		snprintf(identity, max_identity_len, "%s", line);
+		break;
+	}
+	close(fd);
+
+	/* Pass the identity hint to the server */
 	return _tls_psk_server_cb(ssl, identity, psk, max_psk_len);
 }
 
@@ -285,7 +303,6 @@ gck_rpc_init_tls_psk(GckRpcTlsPskState *state, const char *key_filename,
 	SSL_CTX_set_cipher_list(state->ssl_ctx, tls_psk_ciphers);
 
 	snprintf(tls_psk_key_filename, sizeof(tls_psk_key_filename), "%s", key_filename);
-	snprintf(tls_psk_identity, sizeof(tls_psk_identity), "%s", identity ? identity : "");
 
 	state->type = caller;
 	state->initialized = 1;
